@@ -6,11 +6,50 @@ import io.kotest.engine.config.KotestEngineProperties
 
 private val specJavaClass: Class<*> = Spec::class.java
 
-// RETAIN_CLASS_REFERENCE gives us the live java.lang.Class for each frame directly,
-// avoiding a Class.forName lookup, and StackWalker.walk() lets us stop as soon as we
-// find the first user frame instead of always materializing the whole call stack
-// the way Thread.currentThread().stackTrace would do.
-private val stackWalker: StackWalker = StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE)
+internal data class JvmStackFrame(
+   val declaringClass: Class<*>?,
+   val lineNumber: Int,
+)
+
+internal interface StackFrameProvider {
+   fun findFirst(excludeDataTest: Boolean, predicate: (JvmStackFrame) -> Boolean): JvmStackFrame?
+}
+
+internal val stackFrameProvider: StackFrameProvider = try {
+   val classLoader = StackFrameProvider::class.java.classLoader
+   Class.forName("java.lang.StackWalker", false, classLoader)
+   Class.forName("io.kotest.core.source.StackWalkerStackFrameProvider", true, classLoader)
+      .getDeclaredConstructor()
+      .newInstance() as StackFrameProvider
+} catch (_: ReflectiveOperationException) {
+   ThreadStackFrameProvider
+} catch (_: LinkageError) {
+   ThreadStackFrameProvider
+}
+
+private object ThreadStackFrameProvider : StackFrameProvider {
+   override fun findFirst(
+      excludeDataTest: Boolean,
+      predicate: (JvmStackFrame) -> Boolean,
+   ): JvmStackFrame? {
+      return SourceRefUtils.filteredUserFrames(Thread.currentThread().stackTrace, excludeDataTest).firstNotNullOfOrNull {
+         val frame = try {
+            JvmStackFrame(Class.forName(it.className), it.lineNumber)
+         } catch (_: ReflectiveOperationException) {
+            JvmStackFrame(null, it.lineNumber)
+         } catch (_: LinkageError) {
+            JvmStackFrame(null, it.lineNumber)
+         }
+         try {
+            frame.takeIf(predicate)
+         } catch (_: ReflectiveOperationException) {
+            null
+         } catch (_: LinkageError) {
+            null
+         }
+      }
+   }
+}
 
 /**
  * On the JVM we can create a stack trace to get the line number.
@@ -19,12 +58,17 @@ private val stackWalker: StackWalker = StackWalker.getInstance(StackWalker.Optio
 internal actual fun sourceRef(): SourceRef {
    if (sysprop(KotestEngineProperties.DISABLE_SOURCE_REF, "false") == "true") return SourceRef.None
 
-   val frame = SourceRefUtils.firstUserFrame(stackWalker) ?: return SourceRef.None
+   val frame = stackFrameProvider.findFirst(excludeDataTest = true) { true } ?: return SourceRef.None
 
    // preference is given to the class name, but we must try to find the enclosing spec
    var kclass: Class<*>? = frame.declaringClass
-   while (kclass != null && !specJavaClass.isAssignableFrom(kclass)) {
-      kclass = kclass.enclosingClass
+   try {
+      while (kclass != null && !specJavaClass.isAssignableFrom(kclass)) {
+         kclass = kclass.enclosingClass
+      }
+   } catch (e: LinkageError) {
+      if (stackFrameProvider === ThreadStackFrameProvider) return SourceRef.None
+      throw e
    }
 
    val lineNumber = frame.lineNumber.takeIf { it > 0 }
@@ -37,17 +81,6 @@ internal actual fun sourceRef(): SourceRef {
 }
 
 object SourceRefUtils {
-
-   /**
-    * Returns the first user-land frame from the given [StackWalker], walking the live call
-    * stack lazily so frames beyond the match are never materialized.
-    */
-   internal fun firstUserFrame(walker: StackWalker): StackWalker.StackFrame? {
-      return walker.walk { frames ->
-         frames.filter { !isExcludedFrame(it.className, excludeDataTest = true) }.findFirst()
-      }.orElse(null)
-   }
-
    /**
     * Returns the first user-land frame from the given stack trace.
     *
