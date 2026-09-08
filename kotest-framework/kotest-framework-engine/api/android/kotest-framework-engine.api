@@ -4958,4 +4958,3 @@ public final class io/kotest/engine/test/scopes/RegistrationContextElement$Key :
 public final class io/kotest/engine/test/scopes/RegistrationKt {
 	public static final fun getRegistration (Lkotlin/coroutines/CoroutineContext;)Lio/kotest/engine/test/scopes/Registration;
 }
-

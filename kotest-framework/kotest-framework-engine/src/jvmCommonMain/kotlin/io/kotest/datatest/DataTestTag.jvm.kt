@@ -1,6 +1,6 @@
 package io.kotest.datatest
 
-import io.kotest.core.source.stackFrameProvider
+import io.kotest.core.source.findFirstStackFrame
 import io.kotest.core.spec.Spec
 
 private val specJavaClass: Class<*> = Spec::class.java
@@ -11,7 +11,7 @@ private val specJavaClass: Class<*> = Spec::class.java
  * Highly (ok fully) inspired from [io.kotest.core.source.sourceRef]
  */
 internal actual fun getDataTestCallSiteLineNumber(): String {
-   val frame = stackFrameProvider.findFirst(excludeDataTest = false) {
+   val frame = findFirstStackFrame(excludeDataTest = false) {
       it.declaringClass?.let(::isSpecOrNestedInSpec) == true
    }
 

@@ -11,45 +11,10 @@ internal data class JvmStackFrame(
    val lineNumber: Int,
 )
 
-internal interface StackFrameProvider {
-   fun findFirst(excludeDataTest: Boolean, predicate: (JvmStackFrame) -> Boolean): JvmStackFrame?
-}
-
-internal val stackFrameProvider: StackFrameProvider = try {
-   val classLoader = StackFrameProvider::class.java.classLoader
-   Class.forName("java.lang.StackWalker", false, classLoader)
-   Class.forName("io.kotest.core.source.StackWalkerStackFrameProvider", true, classLoader)
-      .getDeclaredConstructor()
-      .newInstance() as StackFrameProvider
-} catch (_: ReflectiveOperationException) {
-   ThreadStackFrameProvider
-} catch (_: LinkageError) {
-   ThreadStackFrameProvider
-}
-
-private object ThreadStackFrameProvider : StackFrameProvider {
-   override fun findFirst(
-      excludeDataTest: Boolean,
-      predicate: (JvmStackFrame) -> Boolean,
-   ): JvmStackFrame? {
-      return SourceRefUtils.filteredUserFrames(Thread.currentThread().stackTrace, excludeDataTest).firstNotNullOfOrNull {
-         val frame = try {
-            JvmStackFrame(Class.forName(it.className), it.lineNumber)
-         } catch (_: ReflectiveOperationException) {
-            JvmStackFrame(null, it.lineNumber)
-         } catch (_: LinkageError) {
-            JvmStackFrame(null, it.lineNumber)
-         }
-         try {
-            frame.takeIf(predicate)
-         } catch (_: ReflectiveOperationException) {
-            null
-         } catch (_: LinkageError) {
-            null
-         }
-      }
-   }
-}
+internal expect fun findFirstStackFrame(
+   excludeDataTest: Boolean,
+   predicate: (JvmStackFrame) -> Boolean,
+): JvmStackFrame?
 
 /**
  * On the JVM we can create a stack trace to get the line number.
@@ -58,7 +23,7 @@ private object ThreadStackFrameProvider : StackFrameProvider {
 internal actual fun sourceRef(): SourceRef {
    if (sysprop(KotestEngineProperties.DISABLE_SOURCE_REF, "false") == "true") return SourceRef.None
 
-   val frame = stackFrameProvider.findFirst(excludeDataTest = true) { true } ?: return SourceRef.None
+   val frame = findFirstStackFrame(excludeDataTest = true) { true } ?: return SourceRef.None
 
    // preference is given to the class name, but we must try to find the enclosing spec
    var kclass: Class<*>? = frame.declaringClass
@@ -66,9 +31,8 @@ internal actual fun sourceRef(): SourceRef {
       while (kclass != null && !specJavaClass.isAssignableFrom(kclass)) {
          kclass = kclass.enclosingClass
       }
-   } catch (e: LinkageError) {
-      if (stackFrameProvider === ThreadStackFrameProvider) return SourceRef.None
-      throw e
+   } catch (_: LinkageError) {
+      return SourceRef.None
    }
 
    val lineNumber = frame.lineNumber.takeIf { it > 0 }
